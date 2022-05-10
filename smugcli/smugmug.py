@@ -45,6 +45,10 @@ class InterruptedError(Error):
   """Error raised when a network operation is interrupted."""
 
 
+class SmugMugLimitsError(Error):
+  """Error raised when SmugMug limits are reached (folder depth, size. etc.)"""
+
+
 class ChildCacheGarbageCollector(object):
   """Garbage collector for clearing the node's children cache.
 

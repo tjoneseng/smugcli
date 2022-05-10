@@ -94,3 +94,6 @@ ENV/
 # Emacs
 *~
 \#*\#
+
+# VS Code
+.vscode

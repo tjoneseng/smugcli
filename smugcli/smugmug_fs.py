@@ -1,4 +1,5 @@
 from . import persistent_dict
+from . import smugmug as smugmug_lib
 from . import task_manager  # Must be included before hachoir so stdout override works.
 from . import thread_pool
 from . import thread_safe_print
@@ -25,27 +26,12 @@ import hashlib
 import os
 import requests
 from six.moves import urllib
+import time
 
 hachoir_config.quiet = True
 
 DEFAULT_MEDIA_EXT = ['gif', 'jpeg', 'jpg', 'mov', 'mp4', 'png', 'heic']
 VIDEO_EXT = ['mov', 'mp4']
-
-
-class Error(Exception):
-  """Base class for all exception of this module."""
-
-
-class RemoteDataError(Error):
-  """Error raised when the remote structure is incompatible with SmugCLI."""
-
-
-class SmugMugLimitsError(Error):
-  """Error raised when SmugMug limits are reached (folder depth, size. etc.)"""
-
-
-class UnexpectedResponseError(Error):
-  """Error raised when encountering unexpected data returned by SmugMug."""
 
 
 class SmugMugFS(object):
@@ -89,7 +75,7 @@ class SmugMugFS(object):
     folder_depth = len(matched_nodes) + len(dirs)
     folder_depth -= 1 if node_type == 'Album' else 0
     if folder_depth >= 7:  # matched_nodes include an extra node for the root.
-      raise SmugMugLimitsError(
+      raise smugmug_lib.SmugMugLimitsError(
         'Cannot create "%s", SmugMug does not support folder more than 5 level '
         'deep.' % os.sep.join([matched_nodes[-1].path] + dirs))
 
@@ -269,7 +255,7 @@ class SmugMugFS(object):
 
     if deprecated_target:
       print('-t/--target argument no longer exists.')
-      print('Specify the target folder as the last positinal argument.')
+      print('Specify the target folder as the last positional argument.')
       return
 
     # The argparse library doesn't seem to support having two positional
@@ -424,18 +410,29 @@ class SmugMugFS(object):
       with open(file_path, 'rb') as f:
         file_content = f.read()
       file_root, file_extension = os.path.splitext(file_name)
-      if file_extension.lower() == '.heic':
-        # SmugMug converts HEIC files to JPEG and renames them in the process
-        renamed_file = file_root + '_' + file_extension[1:] + '.JPG'
-        remote_file = node.get_child(renamed_file)
-      else:
-        remote_file = node.get_child(file_name)
+      try:
+        if file_extension.lower() == '.heic':
+          # SmugMug converts HEIC files to JPEG and renames them in the process
+          renamed_file = file_root + '_' + file_extension[1:] + '.JPG'
+          remote_file = node.get_child(renamed_file)
+        elif file_extension.lower() == '.mp4':
+          # SmugMug converts (?) MP4 files and renames them in the process
+          renamed_file = file_root + '.MP4'
+          remote_file = node.get_child(renamed_file)
+        else:
+          remote_file = node.get_child(file_name)
+      except smugmug_lib.RemoteDataError:
+        print('%s: deleting duplicate' % (file_name))
+        for f in node._get_child_nodes_by_name().get(file_name):  
+          f.delete()
+        remote_file = None
 
       if remote_file:
         if remote_file['Format'].lower() in VIDEO_EXT:
           # Video files are modified by SmugMug server side, so we cannot use
           # the MD5 to check if the file needs a re-sync. Use the last
           # modification time instead.
+          print('%s: video' % (file_path))
           remote_time = datetime.datetime.strptime(
             remote_file.get('ImageMetadata')['DateTimeModified'],
             '%Y-%m-%dT%H:%M:%S')
@@ -457,6 +454,7 @@ class SmugMugFS(object):
           # metadata (e.g. time taken timestamp) is kept in SmugMug that would
           # allow us to tell if the file is the same. Hence, for now we just
           # assume HEIC files never change and we never re-upload them.
+          print('%s: heic'  % (file_path))
           same_file = True
         else:
           remote_md5 = remote_file['ArchivedMD5']
@@ -465,6 +463,10 @@ class SmugMugFS(object):
 
         if same_file:
           return  # File already exists on Smugmug
+        else:
+          print('%s: local %s remote %s' % (file_path, file_md5, remote_md5))
+      else:
+        print('%s: remote does not exist' % (file_path))
 
       if self._aborting:
         return
@@ -483,6 +485,7 @@ class SmugMugFS(object):
       print('File "%s" exists, but has changed. '
             'Deleting old version.' % file_path)
       remote_file.delete()
+      time.sleep(1)
       task = '+ Re-uploading "%s"' % file_path
     else:
       task = '+ Uploading "%s"' % file_path
